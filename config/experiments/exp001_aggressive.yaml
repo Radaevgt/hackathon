@@ -1,0 +1,65 @@
+﻿# Экспериментальная конфигурация: Aggressive optimization
+experiment:
+  name: "exp001_aggressive"
+  seed: 42
+  version: "1.1"
+  description: "Агрессивная оптимизация - увеличенные top_k, reranking"
+  
+data:
+  websites_path: "data/raw/websites.csv"
+  questions_path: "data/raw/questions.csv"
+  output_path: "data/submissions"
+  
+preprocessing:
+  use_metadata_enhancement: true
+  use_chunking: false  # Попробовать true для длинных документов
+  chunk_size: 512
+  chunk_overlap: 50
+  min_text_length: 10
+  
+retrieval:
+  # BM25 с оптимизированными параметрами
+  use_bm25: true
+  bm25:
+    k1: 1.8  # Увеличено для более сильного boost частых слов
+    b: 0.65   # Уменьшено для меньшей length normalization
+    top_k: 150  # Больше кандидатов
+  
+  # Dense retrieval
+  use_dense: true
+  dense:
+    model_name: "intfloat/multilingual-e5-large"
+    use_gpu: false
+    batch_size: 32
+    normalize_embeddings: true
+    index_type: "IVFFlat"
+    nprobe: 15  # Больше для лучшей точности
+    top_k: 150
+  
+  # RRF fusion с меньшим k для более агрессивного boost топов
+  fusion_type: "rrf"
+  rrf_k: 50  # Было 60
+  
+  # Включаем reranking
+  use_reranking: true
+  reranker:
+    model_name: "cross-encoder/ms-marco-MiniLM-L-12-v2"
+    top_k_candidates: 30  # Rerank топ-30
+    batch_size: 16
+
+evaluation:
+  metrics:
+    - "hit@5"
+    - "hit@10"
+    - "mrr"
+    - "precision@5"
+    - "recall@5"
+  
+output:
+  submission_format: "csv"
+  save_indices: true
+  indices_dir: "data/indices/exp001"
+  
+logging:
+  level: "INFO"
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
