@@ -28,10 +28,10 @@ retrieval:
   use_dense: true
   dense:
     model_name: "intfloat/multilingual-e5-large"
-    use_gpu: false
-    batch_size: 32
+    use_gpu: true  # ✅ Теперь безопасно включать
+    batch_size: 64  # Увеличиваем для GPU
     normalize_embeddings: true
-    index_type: "Flat"  # Flat, IVFFlat, IVFPQ
+    index_type: "Flat"
     nprobe: 10
     top_k: 100
   

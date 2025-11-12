@@ -184,7 +184,12 @@ class RetrievalPipeline:
         output_path.mkdir(parents=True, exist_ok=True)
         
         for i, retriever in enumerate(self.retrievers):
-            index_path = output_path / f"{retriever.name}_index_{i}.faiss"
+            # Определяем расширение файла в зависимости от типа retriever'а
+            if isinstance(retriever, BM25Retriever):
+                index_path = output_path / f"{retriever.name}_index_{i}.pkl"
+            else:
+                index_path = output_path / f"{retriever.name}_index_{i}.faiss"
+            
             retriever.save_index(str(index_path))
         
         logger.info(f"Indices saved to {output_dir}")
@@ -200,7 +205,12 @@ class RetrievalPipeline:
         input_path = Path(input_dir)
         
         for i, retriever in enumerate(self.retrievers):
-            index_path = input_path / f"{retriever.name}_index_{i}.faiss"
+            # Определяем расширение файла в зависимости от типа retriever'а
+            if isinstance(retriever, BM25Retriever):
+                index_path = input_path / f"{retriever.name}_index_{i}.pkl"
+            else:
+                index_path = input_path / f"{retriever.name}_index_{i}.faiss"
+            
             if index_path.exists():
                 retriever.load_index(str(index_path))
             else:

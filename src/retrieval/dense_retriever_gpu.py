@@ -1,5 +1,5 @@
-﻿"""
-Dense Retrieval с использованием E5 embeddings + GPU
+"""
+Dense Retrieval с GPU acceleration для encoding
 """
 
 from typing import List, Tuple, Optional
@@ -15,8 +15,12 @@ from src.retrieval.base import BaseRetriever
 
 class DenseRetriever(BaseRetriever):
     """
-    Dense retrieval с GPU acceleration для encoding
-    FAISS индекс остается на CPU (faiss-gpu недоступен на Windows)
+    Dense retrieval с GPU для encoding, CPU для FAISS
+    
+    ВАЖНО: На Windows FAISS-GPU недоступен через pip,
+    поэтому используем гибридный подход:
+    - GPU для encoding (10x ускорение)
+    - CPU для FAISS index (поиск и так быстрый)
     """
     
     def __init__(
@@ -32,21 +36,21 @@ class DenseRetriever(BaseRetriever):
         self.batch_size = batch_size
         self.normalize_embeddings = normalize_embeddings
         
-        # 🚀 GPU Detection и Setup
+        # Проверка CUDA
         self.device = "cpu"
         if use_gpu and torch.cuda.is_available():
             self.device = "cuda"
             gpu_name = torch.cuda.get_device_name(0)
             gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
             logger.info(f"🚀 Using GPU: {gpu_name} ({gpu_memory:.1f} GB)")
-            logger.info(f"🚀 Expected speedup: ~20-30x for encoding")
+            logger.info(f"🚀 GPU encoding will be ~10x faster than CPU")
         elif use_gpu:
-            logger.warning("⚠️ GPU requested but CUDA not available, falling back to CPU")
+            logger.warning("⚠️ GPU requested but CUDA not available, using CPU")
         else:
             logger.info("Using CPU for encoding")
         
-        # Загрузка модели на выбранное устройство
-        logger.info(f"Loading model: {model_name} on device: {self.device}")
+        # Загрузка модели
+        logger.info(f"Loading model: {model_name}")
         self.model = SentenceTransformer(model_name, device=self.device)
         self.dimension = self.model.get_sentence_embedding_dimension()
         
@@ -61,25 +65,22 @@ class DenseRetriever(BaseRetriever):
         index_type: str = "Flat",
         nlist: int = 100
     ):
-        """
-        Построение FAISS индекса с GPU encoding
-        """
-        import time
-        
+        """Построение FAISS индекса с GPU encoding"""
         logger.info(f"Building dense index for {len(documents)} documents...")
         logger.info(f"Index type: {index_type}, Device: {self.device}")
         
         self.num_documents = len(documents)
         
-        # ⚡ Encoding (здесь используется GPU если доступен)
+        # 🚀 Кодирование на GPU (если доступен)
+        import time
         start_time = time.time()
+        
         embeddings = self._encode_batch(documents, desc="Encoding documents")
+        
         encoding_time = time.time() - start_time
+        logger.info(f"⚡ Encoding completed in {encoding_time:.1f}s ({len(documents)/encoding_time:.1f} docs/s)")
         
-        docs_per_sec = len(documents) / encoding_time
-        logger.info(f"⚡ Encoding completed in {encoding_time:.1f}s ({docs_per_sec:.1f} docs/s)")
-        
-        # Построение FAISS индекса (CPU)
+        # Построение FAISS индекса (всегда CPU)
         if index_type == "Flat":
             self.index = self._build_flat_index(embeddings)
         elif index_type == "IVFFlat":
@@ -90,16 +91,17 @@ class DenseRetriever(BaseRetriever):
             raise ValueError(f"Unknown index type: {index_type}")
         
         self.is_built = True
-        logger.info(f"Dense index built: {self.index.ntotal} vectors")
+        total_time = time.time() - start_time
+        logger.info(f"✅ Dense index built in {total_time:.1f}s: {self.index.ntotal} vectors")
     
     def _build_flat_index(self, embeddings: np.ndarray) -> faiss.Index:
-        """Exact search index"""
+        """Flat индекс (exact search) - всегда CPU"""
         index = faiss.IndexFlatIP(self.dimension)
         index.add(embeddings)
         return index
     
     def _build_ivf_flat_index(self, embeddings: np.ndarray, nlist: int) -> faiss.Index:
-        """Approximate search with IVF"""
+        """IVF Flat индекс - CPU"""
         quantizer = faiss.IndexFlatIP(self.dimension)
         index = faiss.IndexIVFFlat(quantizer, self.dimension, nlist)
         
@@ -110,7 +112,7 @@ class DenseRetriever(BaseRetriever):
         return index
     
     def _build_ivf_pq_index(self, embeddings: np.ndarray, nlist: int, m: int = 96) -> faiss.Index:
-        """Compressed index with Product Quantization"""
+        """IVF PQ индекс - CPU, compressed"""
         quantizer = faiss.IndexFlatIP(self.dimension)
         index = faiss.IndexIVFPQ(quantizer, self.dimension, nlist, m, 8)
         
@@ -121,22 +123,19 @@ class DenseRetriever(BaseRetriever):
         return index
     
     def search(self, query: str, k: int = 5, nprobe: int = 10) -> List[Tuple[int, float]]:
-        """
-        Поиск топ-k документов (с GPU encoding запроса)
-        """
+        """Поиск с GPU encoding запроса"""
         self._check_built()
         
-        # E5 требует query prefix
+        # E5 требует префикс для запросов
         query_text = f"query: {query}"
         
-        # Encoding на GPU/CPU
+        # 🚀 Encoding на GPU
         query_emb = self._encode_batch([query_text], desc=None)[0:1]
         
-        # Настройка nprobe для IVF
+        # Поиск в CPU индексе (быстро)
         if hasattr(self.index, 'nprobe'):
             self.index.nprobe = nprobe
         
-        # Поиск
         distances, indices = self.index.search(query_emb, k)
         
         results = [
@@ -152,22 +151,20 @@ class DenseRetriever(BaseRetriever):
         texts: List[str],
         desc: Optional[str] = None
     ) -> np.ndarray:
-        """
-        Пакетное кодирование на GPU/CPU
-        """
+        """Пакетное кодирование на GPU/CPU"""
         embeddings = self.model.encode(
             texts,
             batch_size=self.batch_size,
             show_progress_bar=desc is not None,
             convert_to_numpy=True,
-            normalize_embeddings=self.normalize_embeddings
-            # device уже установлен при инициализации модели
+            normalize_embeddings=self.normalize_embeddings,
+            device=self.device  # Использует self.device (cuda или cpu)
         )
         
         return embeddings.astype('float32')
     
     def save_index(self, path: str):
-        """Сохранение FAISS индекса"""
+        """Сохранение индекса"""
         self._check_built()
         
         path = Path(path)
@@ -177,7 +174,7 @@ class DenseRetriever(BaseRetriever):
         logger.info(f"Index saved to {path}")
     
     def load_index(self, path: str):
-        """Загрузка FAISS индекса"""
+        """Загрузка индекса"""
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Index file not found: {path}")

@@ -6,6 +6,8 @@ from typing import List, Tuple
 import numpy as np
 from rank_bm25 import BM25Okapi
 from loguru import logger
+import pickle
+from pathlib import Path
 
 try:
     from razdel import tokenize
@@ -147,3 +149,55 @@ class BM25Retriever(BaseRetriever):
         scores = self.bm25.get_scores(query_tokens)
         
         return scores
+    
+    def save_index(self, path: str):
+        """
+        Сохранение BM25 индекса
+        
+        Args:
+            path: Путь для сохранения
+        """
+        self._check_built()
+        
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Сохраняем tokenized_corpus и параметры BM25
+        data = {
+            'tokenized_corpus': self.tokenized_corpus,
+            'k1': self.k1,
+            'b': self.b
+        }
+        
+        with open(path, 'wb') as f:
+            pickle.dump(data, f)
+        
+        logger.info(f"BM25 index saved to {path}")
+    
+    def load_index(self, path: str):
+        """
+        Загрузка BM25 индекса
+        
+        Args:
+            path: Путь к сохраненному индексу
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Index file not found: {path}")
+        
+        with open(path, 'rb') as f:
+            data = pickle.load(f)
+        
+        self.tokenized_corpus = data['tokenized_corpus']
+        self.k1 = data['k1']
+        self.b = data['b']
+        
+        # Пересоздаем BM25 индекс
+        self.bm25 = BM25Okapi(
+            self.tokenized_corpus,
+            k1=self.k1,
+            b=self.b
+        )
+        
+        self.is_built = True
+        logger.info(f"BM25 index loaded from {path}")
